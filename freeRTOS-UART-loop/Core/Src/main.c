@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdio.h>
+#include "semphr.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,27 +52,22 @@ const osThreadAttr_t defaultTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for UART_RX */
-osThreadId_t UART_RXHandle;
-const osThreadAttr_t UART_RX_attributes = {
-  .name = "UART_RX",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityBelowNormal,
-};
-/* Definitions for UART_TX */
-osThreadId_t UART_TXHandle;
-const osThreadAttr_t UART_TX_attributes = {
-  .name = "UART_TX",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityBelowNormal,
-};
-/* Definitions for UART_mutex */
-osMutexId_t UART_mutexHandle;
-const osMutexAttr_t UART_mutex_attributes = {
-  .name = "UART_mutex"
-};
-/* USER CODE BEGIN PV */
 
+/* USER CODE BEGIN PV */
+osThreadId_t uartRxHandle;
+const osThreadAttr_t uartRxTask_attributes = {
+  .name = "uartRxTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
+osThreadId_t uartTxHandle;
+const osThreadAttr_t uartTxTask_attributes = {
+  .name = "uartTxTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
+
+xSemaphoreHandle x_uartMutex; // dynamically allocated, we have plenty of space
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -79,11 +75,10 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 void StartDefaultTask(void *argument);
-void StartRX(void *argument);
-void StartTX(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+void StartUartRxTask(void *argument);
+void StartUartTxTask(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -127,16 +122,13 @@ int main(void)
 
   /* Init scheduler */
   osKernelInitialize();
-  /* Create the mutex(es) */
-  /* creation of UART_mutex */
-  UART_mutexHandle = osMutexNew(&UART_mutex_attributes);
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
+  x_uartMutex = xSemaphoreCreateMutex();
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -151,14 +143,9 @@ int main(void)
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* creation of UART_RX */
-  UART_RXHandle = osThreadNew(StartRX, NULL, &UART_RX_attributes);
-
-  /* creation of UART_TX */
-  UART_TXHandle = osThreadNew(StartTX, NULL, &UART_TX_attributes);
-
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  uartRxHandle = osThreadNew(StartUartRxTask, NULL, &uartRxTask_attributes);
+  uartTxHandle = osThreadNew(StartUartTxTask, NULL, &uartTxTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -299,6 +286,40 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+void StartUartRxTask(void *argument)
+{
+  /* Infinite loop */
+	uint8_t pData[8];
+	uint8_t expectedData[] = "ping\r\n";
+	uint8_t response[] = "pong\r\n";
+  for(;;)
+  {
+	osMutexAcquire(x_uartMutex, portMAX_DELAY);
+	HAL_UART_Receive_IT(&huart2, pData, sizeof(pData) - 1); // receives "¥¥¥¥E\\\0\b"
+//	if (strcmp((char *)pData, (char *)expectedData) == 0)
+//	{
+//		HAL_UART_Transmit(&huart2, response, sizeof(pData) - 1, 100);
+//	}
+	osMutexRelease(x_uartMutex);
+    osDelay(1000);
+  }
+}
+
+
+void StartUartTxTask(void *argument)
+{
+  /* Infinite loop */
+	uint8_t pData[] = "ping\r\n";
+  for(;;)
+  {
+	osMutexAcquire(x_uartMutex, portMAX_DELAY);
+	HAL_UART_Transmit(&huart2, pData, sizeof(pData), 100);
+	HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+	osMutexRelease(x_uartMutex);
+    osDelay(1000);
+  }
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -317,62 +338,6 @@ void StartDefaultTask(void *argument)
     osDelay(1);
   }
   /* USER CODE END 5 */
-}
-
-/* USER CODE BEGIN Header_StartRX */
-/**
-* @brief Function implementing the UART_RX thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartRX */
-void StartRX(void *argument)
-{
-  /* USER CODE BEGIN StartRX */
-  /* Infinite loop */
-	uint8_t pData[8];
-	uint8_t txData[] = "pong\r\n";
-	uint8_t expectedData[] = "ping\r\n";
-
-	for(;;)
-	{
-		if (osMutexAcquire(UART_mutexHandle, osWaitForever) == osOK)
-		{
-			HAL_UART_Receive_IT(&huart2, pData, sizeof(pData));
-			if (memcmp(expectedData, pData, sizeof(pData) - 1) == 0)
-			{
-				HAL_UART_Transmit_IT(&huart2, txData, sizeof(txData));
-			}
-		}
-		osMutexRelease(UART_mutexHandle);
-		osDelay(1000);
-	}
-  /* USER CODE END StartRX */
-}
-
-/* USER CODE BEGIN Header_StartTX */
-/**
-* @brief Function implementing the UART_TX thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartTX */
-void StartTX(void *argument)
-{
-  /* USER CODE BEGIN StartTX */
-  /* Infinite loop */
-	uint8_t pData[] = "ping\r\n";
-	for(;;)
-	{
-		if (osMutexAcquire(UART_mutexHandle, osWaitForever) == osOK)
-		{
-			HAL_UART_Transmit_IT(&huart2, pData, sizeof(pData));
-		}
-		osMutexRelease(UART_mutexHandle);
-		HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-		osDelay(1000);
-	}
-  /* USER CODE END StartTX */
 }
 
 /**
